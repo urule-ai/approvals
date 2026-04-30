@@ -22,10 +22,9 @@ export function loadConfig(): Config {
 
 export function validateConfig(config: Config): void {
   const missing: string[] = [];
-  if (!process.env['NATS_URL'] && config.natsUrl.includes('localhost')) {
-    missing.push('NATS_URL (using default)');
-  }
+  if (!process.env['NATS_URL']) missing.push('NATS_URL');
+  if (!process.env['TEMPORAL_ADDRESS']) missing.push('TEMPORAL_ADDRESS');
   if (missing.length > 0) {
-    console.warn(`[${config.serviceName}] Config warnings: ${missing.join(', ')}`);
+    throw new Error(`[${config.serviceName}] Missing required env vars: ${missing.join(', ')}`);
   }
 }
