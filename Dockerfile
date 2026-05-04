@@ -18,9 +18,11 @@ COPY urule/packages/correlation-id/package.json urule/packages/correlation-id/pa
 COPY urule/packages/correlation-id/dist urule/packages/correlation-id/dist
 COPY urule/packages/events/package.json urule/packages/events/package.json
 COPY urule/packages/events/dist urule/packages/events/dist
+COPY urule/packages/observability/package.json urule/packages/observability/package.json
+COPY urule/packages/observability/dist urule/packages/observability/dist
 COPY approvals/package.json approvals/package-lock.json approvals/
 WORKDIR /app/approvals
-RUN npm ci
+RUN npm ci --install-links
 COPY approvals/tsconfig.json ./
 COPY approvals/src ./src
 RUN npm run build
@@ -34,9 +36,11 @@ COPY urule/packages/correlation-id/package.json urule/packages/correlation-id/pa
 COPY urule/packages/correlation-id/dist urule/packages/correlation-id/dist
 COPY urule/packages/events/package.json urule/packages/events/package.json
 COPY urule/packages/events/dist urule/packages/events/dist
+COPY urule/packages/observability/package.json urule/packages/observability/package.json
+COPY urule/packages/observability/dist urule/packages/observability/dist
 COPY approvals/package.json approvals/package-lock.json approvals/
 WORKDIR /app/approvals
-RUN npm ci --omit=dev
+RUN npm ci --install-links --omit=dev
 COPY --from=builder /app/approvals/dist ./dist
 EXPOSE 3000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
