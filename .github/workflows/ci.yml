@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
 
@@ -31,3 +32,58 @@ jobs:
 
       - name: Test
         run: npm test
+
+  docker-publish:
+    # Pattern B — clones urule alongside so the standalone's Dockerfile (with
+    # build context = parent of both repos) can resolve `file:../urule/...`
+    # workspace deps and access pre-built dist/ directories.
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-and-test]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout approvals
+        uses: actions/checkout@v4
+        with:
+          path: approvals
+      - name: Checkout urule (for workspace deps)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/urule
+          path: urule
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: urule/package-lock.json
+      - name: Pre-build urule workspace packages
+        run: npm --prefix urule install && npm --prefix urule run build:all
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/approvals
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: approvals/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=approvals
+          cache-to: type=gha,scope=approvals,mode=max
