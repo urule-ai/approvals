@@ -1,9 +1,19 @@
 import type { FastifyInstance } from 'fastify';
-import type { ApprovalStatus, CreateRichApprovalParams } from '../types.js';
+import type { ApprovalStatus, CreateRichApprovalParams, ApprovalRequest } from '../types.js';
 import { ApprovalManager } from '../services/approval-manager.js';
 import { ApprovalRouter } from '../services/approval-router.js';
 import { z } from 'zod';
-import { AuditLogger } from '@urule/events';
+import { AuditLogger, APPROVAL_TOPICS, type EventBus } from '@urule/events';
+
+export interface ApprovalRoutesOptions {
+  /**
+   * When set, route handlers fire-and-forget-publish approval lifecycle
+   * events to NATS. Subscribers (notifications service / langgraph-adapter
+   * WS broadcaster) translate these into real-time pushes to office-ui.
+   * Optional — routes degrade gracefully when NATS is unreachable.
+   */
+  eventBus?: EventBus;
+}
 
 const audit = new AuditLogger('approvals', (topic, data) => {
   console.log(JSON.stringify({ audit: true, topic, ...data as Record<string, unknown> }));
@@ -60,7 +70,37 @@ export function registerApprovalRoutes(
   app: FastifyInstance,
   manager: ApprovalManager,
   router: ApprovalRouter,
+  options: ApprovalRoutesOptions = {},
 ): void {
+  /**
+   * Fire-and-forget publish helper. Failures don't propagate to the
+   * HTTP response — the approval mutation already succeeded; a missed
+   * notification doesn't reverse it. Logged at warn so an outage is
+   * visible without breaking the request flow.
+   */
+  function publish(topic: string, approval: ApprovalRequest): void {
+    if (!options.eventBus) return;
+    options.eventBus
+      .publish(topic, {
+        approvalId: approval.id,
+        workspaceId: approval.workspaceId,
+        runId: approval.runId,
+        agentId: approval.agentId,
+        status: approval.status,
+        priority: approval.priority,
+        riskLevel: approval.riskLevel,
+        title: approval.title,
+        action: approval.action,
+        decidedBy: approval.decidedBy,
+        decision: approval.decision,
+        assignedTo: approval.assignedTo,
+        updatedAt: approval.updatedAt,
+      })
+      .catch((err: unknown) => {
+        app.log.warn({ err, topic, approvalId: approval.id }, 'Failed to publish approval event');
+      });
+  }
+
   // List all approvals (with optional status_filter query param)
   app.get<{ Querystring: { status_filter?: string } }>('/api/v1/approvals', async (request) => {
     const { status_filter } = request.query;
@@ -105,9 +145,12 @@ export function registerApprovalRoutes(
         decidedBy: 'system:auto-approve',
         note: 'Auto-approved by routing rule',
       });
+      publish(APPROVAL_TOPICS.APPROVAL_REQUESTED, approval);
+      publish(APPROVAL_TOPICS.APPROVAL_DECIDED, approved);
       return reply.status(201).send(approved);
     }
 
+    publish(APPROVAL_TOPICS.APPROVAL_REQUESTED, approval);
     return reply.status(201).send(approval);
   });
 
@@ -141,6 +184,7 @@ export function registerApprovalRoutes(
         approvalId, 'approved', `Approval "${approvalId}" approved by ${body.decidedBy}`,
         { metadata: { note: body.note } },
       ).catch(() => {});
+      publish(APPROVAL_TOPICS.APPROVAL_DECIDED, approval);
 
       return approval;
     } catch (err) {
@@ -169,6 +213,7 @@ export function registerApprovalRoutes(
         approvalId, 'denied', `Approval "${approvalId}" denied by ${body.decidedBy}`,
         { metadata: { note: body.note } },
       ).catch(() => {});
+      publish(APPROVAL_TOPICS.APPROVAL_DECIDED, approval);
 
       return approval;
     } catch (err) {
@@ -191,6 +236,7 @@ export function registerApprovalRoutes(
         decidedBy: body.decidedBy,
         note: body.note,
       });
+      publish(APPROVAL_TOPICS.APPROVAL_DECIDED, approval);
       return approval;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
@@ -208,6 +254,7 @@ export function registerApprovalRoutes(
     const body = parsed.data;
     try {
       const approval = manager.requestChanges(approvalId, body.decidedBy, body.note);
+      publish(APPROVAL_TOPICS.APPROVAL_DECIDED, approval);
       return approval;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
@@ -231,6 +278,7 @@ export function registerApprovalRoutes(
         approvalId, 'escalated', `Approval "${approvalId}" escalated`,
         { metadata: { escalateTo: body.escalateTo } },
       ).catch(() => {});
+      publish(APPROVAL_TOPICS.APPROVAL_ESCALATED, approval);
 
       return approval;
     } catch (err) {
@@ -244,6 +292,7 @@ export function registerApprovalRoutes(
     const { approvalId } = request.params as { approvalId: string };
     try {
       const approval = manager.cancel(approvalId);
+      publish(APPROVAL_TOPICS.APPROVAL_DECIDED, approval);
       return approval;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
